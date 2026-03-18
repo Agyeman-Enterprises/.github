@@ -1,0 +1,28 @@
+name: Security Scan
+
+# Drop this file into any Agyeman Enterprises repo at:
+#   .github/workflows/security-scan.yml
+#
+# Customize the inputs below for your repo type.
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * 1'  # Mondays 6am UTC (4pm Guam)
+
+jobs:
+  security:
+    uses: Agyeman-Enterprises/.github/.github/workflows/security-reusable.yml@main
+    with:
+      # Set to true if repo has requirements.txt (Python)
+      has_python: false
+      # Set to true if repo has package.json (npm)
+      has_npm: true
+      # For multi-workspace repos: "frontend,dashboard" — or just "." for root
+      npm_workspaces: "."
+      # Semgrep rulesets — customize per language/framework
+      semgrep_config: "p/typescript p/react p/nextjs p/secrets p/owasp-top-ten"
+    secrets: inherit
