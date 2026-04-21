@@ -30,7 +30,7 @@ jobs:
       - name: Enforce all org repos
         env:
           GH_TOKEN: ${{ secrets.ENFORCEMENT_PAT }}
-          FORCE_ALL: ${{ github.event.inputs.force_all }}
+          FORCE_ALL: ${{ github.event.inputs.force_all || 'false' }}
         run: |
           ORGS="Agyeman-Enterprises isaalia IMHO-MEDIA"
           OK=0; SKIP=0; FAIL=0
