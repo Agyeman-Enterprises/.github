@@ -1,0 +1,91 @@
+name: Auto-Enforce New Repos
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      force_all:
+        description: 'Force push to ALL repos (not just unenforced ones)'
+        required: false
+        default: 'false'
+
+jobs:
+  enforce:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout ae-enforcement
+        uses: actions/checkout@v4
+        with:
+          repository: Agyeman-Enterprises/ae-enforcement
+          token: ${{ secrets.ENFORCEMENT_PAT }}
+          path: ae-enforcement
+
+      - name: Install jq
+        run: sudo apt-get install -y jq
+
+      - name: Enforce all org repos
+        env:
+          GH_TOKEN: ${{ secrets.ENFORCEMENT_PAT }}
+          FORCE_ALL: ${{ github.event.inputs.force_all || 'false' }}
+        run: |
+          ORGS="Agyeman-Enterprises isaalia IMHO-MEDIA"
+          OK=0; SKIP=0; FAIL=0
+
+          push_file() {
+            local ORG="$1" REPO="$2" BRANCH="$3" REMOTE_PATH="$4" LOCAL="$5"
+            local CONTENT SHA BODY RESULT
+            CONTENT=$(base64 -w0 < "$LOCAL")
+            SHA=$(gh api "repos/$ORG/$REPO/contents/$REMOTE_PATH" --jq '.sha' 2>/dev/null)
+            if [ -n "$SHA" ]; then
+              BODY=$(jq -n --arg m "chore: install AE scope guard" --arg c "$CONTENT" --arg b "$BRANCH" --arg s "$SHA" '{message:$m,content:$c,branch:$b,sha:$s}')
+            else
+              BODY=$(jq -n --arg m "chore: install AE scope guard" --arg c "$CONTENT" --arg b "$BRANCH" '{message:$m,content:$c,branch:$b}')
+            fi
+            RESULT=$(echo "$BODY" | gh api "repos/$ORG/$REPO/contents/$REMOTE_PATH" --method PUT --input - 2>&1)
+            return $?
+          }
+
+          for ORG in $ORGS; do
+            echo "=== $ORG ==="
+            while IFS=$'\t' read -r REPO BRANCH; do
+              [ -z "$REPO" ] && continue
+              case "$REPO" in ae-enforcement|claude-memory|.github|enforcement-template) SKIP=$((SKIP+1)); continue;; esac
+
+              if [ "$FORCE_ALL" != "true" ]; then
+                EXISTS=$(gh api "repos/$ORG/$REPO/contents/MUST-NEVERS.md" --jq '.sha' 2>/dev/null)
+                if [ -n "$EXISTS" ]; then
+                  SKIP=$((SKIP+1))
+                  continue
+                fi
+              fi
+
+              echo "  Enforcing $ORG/$REPO ($BRANCH)"
+              ERR=0
+              push_file "$ORG" "$REPO" "$BRANCH" "MUST-NEVERS.md"                        "ae-enforcement/MUST-NEVERS.md"                           || ERR=1
+              push_file "$ORG" "$REPO" "$BRANCH" ".claude/settings.json"                 "ae-enforcement/claude-template/settings.template.json"   || ERR=1
+              push_file "$ORG" "$REPO" "$BRANCH" ".claude/hooks/hook-prompt-submit.ps1"  "ae-enforcement/scripts/hooks/hook-prompt-submit.ps1"     || ERR=1
+              push_file "$ORG" "$REPO" "$BRANCH" ".claude/hooks/hook-pre-tool-use.ps1"   "ae-enforcement/scripts/hooks/hook-pre-tool-use.ps1"      || ERR=1
+              push_file "$ORG" "$REPO" "$BRANCH" ".claude/hooks/hook-violation-scanner.ps1" "ae-enforcement/scripts/hooks/hook-violation-scanner.ps1" || ERR=1
+              push_file "$ORG" "$REPO" "$BRANCH" ".claude/hooks/hook-stop.ps1"           "ae-enforcement/scripts/hooks/hook-stop.ps1"              || ERR=1
+              push_file "$ORG" "$REPO" "$BRANCH" ".claude/Submit-PlanToOO.ps1"           "ae-enforcement/claude-template/Submit-PlanToOO.ps1"      || ERR=1
+              push_file "$ORG" "$REPO" "$BRANCH" ".claude/Complete-PlanWithOO.ps1"       "ae-enforcement/claude-template/Complete-PlanWithOO.ps1"  || ERR=1
+
+              if [ "$ERR" -eq 0 ]; then
+                echo "  OK: $ORG/$REPO"
+                OK=$((OK+1))
+              else
+                echo "  FAIL: $ORG/$REPO"
+                FAIL=$((FAIL+1))
+              fi
+
+            done < <(gh repo list "$ORG" --limit 300 --json name,defaultBranchRef \
+              --jq '.[] | [.name, (.defaultBranchRef.name // "main")] | @tsv' 2>/dev/null)
+          done
+
+          echo ""
+          echo "DONE: $OK enforced, $SKIP skipped (already done), $FAIL failed"
+          if [ "$FAIL" -gt 0 ]; then exit 1; fi
